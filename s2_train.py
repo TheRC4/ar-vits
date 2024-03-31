@@ -42,7 +42,7 @@ def main():
 
     n_gpus = torch.cuda.device_count()
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '8000'
+    os.environ['MASTER_PORT'] = '8001'
 
     hps = utils.get_hparams(stage=2)
     mp.spawn(run, nprocs=n_gpus, args=(n_gpus, hps,))
@@ -151,16 +151,15 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
     net_g.train()
     net_d.train()
-    for batch_idx, (ssl, ssl_lengths, spec, spec_lengths, y, y_lengths, text, text_lengths) in tqdm(enumerate(train_loader)):
+    for batch_idx, (ssl, ssl_lengths, spec, spec_lengths, y, y_lengths) in tqdm(enumerate(train_loader)):
         spec, spec_lengths = spec.cuda(rank, non_blocking=True), spec_lengths.cuda(rank, non_blocking=True)
         y, y_lengths = y.cuda(rank, non_blocking=True), y_lengths.cuda(rank, non_blocking=True)
         ssl = ssl.cuda(rank, non_blocking=True)
         ssl_lengths = ssl_lengths.cuda(rank, non_blocking=True)
-        text, text_lengths = text.cuda(rank, non_blocking=True), text_lengths.cuda(rank, non_blocking=True)
 
         with autocast(enabled=hps.train.fp16_run):
             y_hat, kl_ssl, ids_slice, x_mask, z_mask, \
-                (z, z_p, m_p, logs_p, m_q, logs_q), stats_ssl = net_g(ssl, spec, spec_lengths, text, text_lengths)
+                (z, z_p, m_p, logs_p, m_q, logs_q), stats_ssl = net_g(ssl, spec, spec_lengths)
 
             mel = spec_to_mel_torch(
                 spec,
@@ -203,7 +202,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
                 loss_fm = feature_loss(fmap_r, fmap_g)
                 loss_gen, losses_gen = generator_loss(y_d_hat_g)
-                loss_gen_all = loss_gen + loss_fm + loss_mel + kl_ssl * 1 + loss_kl
+                loss_gen_all = loss_gen + loss_fm + loss_mel + kl_ssl  + loss_kl
 
         optim_g.zero_grad()
         scaler.scale(loss_gen_all).backward()
@@ -265,42 +264,38 @@ def evaluate(hps, generator, eval_loader, writer_eval):
     audio_dict = {}
     print("Evaluating ...")
     with torch.no_grad():
-        for batch_idx, (ssl, ssl_lengths, spec, spec_lengths, y, y_lengths, text, text_lengths) in enumerate(eval_loader):
-            print(111)
+        for batch_idx, (ssl, ssl_lengths, spec, spec_lengths, y, y_lengths) in enumerate(eval_loader):
             spec, spec_lengths = spec.cuda(), spec_lengths.cuda()
             y, y_lengths = y.cuda(), y_lengths.cuda()
             ssl = ssl.cuda()
-            text, text_lengths = text.cuda(), text_lengths.cuda()
-            for test in [0, 1]:
+            y_hat, mask, *_ = generator.module.infer(ssl,spec,  spec_lengths)
+            y_hat_lengths = mask.sum([1, 2]).long() * hps.data.hop_length
 
-                y_hat, mask, *_ = generator.module.infer(ssl,spec,  spec_lengths,text, text_lengths, test=test)
-                y_hat_lengths = mask.sum([1, 2]).long() * hps.data.hop_length
-
-                mel = spec_to_mel_torch(
-                    spec,
-                    hps.data.filter_length,
-                    hps.data.n_mel_channels,
-                    hps.data.sampling_rate,
-                    hps.data.mel_fmin,
-                    hps.data.mel_fmax)
-                y_hat_mel = mel_spectrogram_torch(
-                    y_hat.squeeze(1).float(),
-                    hps.data.filter_length,
-                    hps.data.n_mel_channels,
-                    hps.data.sampling_rate,
-                    hps.data.hop_length,
-                    hps.data.win_length,
-                    hps.data.mel_fmin,
-                    hps.data.mel_fmax
-                )
-                image_dict.update({
-                    f"gen/mel_{batch_idx}_{test}": utils.plot_spectrogram_to_numpy(y_hat_mel[0].cpu().numpy())
-                })
-                audio_dict.update({
-                    f"gen/audio_{batch_idx}_{test}": y_hat[0, :, :y_hat_lengths[0]]
-                })
-                image_dict.update({f"gt/mel_{batch_idx}": utils.plot_spectrogram_to_numpy(mel[0].cpu().numpy())})
-                audio_dict.update({f"gt/audio_{batch_idx}": y[0, :, :y_lengths[0]]})
+            mel = spec_to_mel_torch(
+                spec,
+                hps.data.filter_length,
+                hps.data.n_mel_channels,
+                hps.data.sampling_rate,
+                hps.data.mel_fmin,
+                hps.data.mel_fmax)
+            y_hat_mel = mel_spectrogram_torch(
+                y_hat.squeeze(1).float(),
+                hps.data.filter_length,
+                hps.data.n_mel_channels,
+                hps.data.sampling_rate,
+                hps.data.hop_length,
+                hps.data.win_length,
+                hps.data.mel_fmin,
+                hps.data.mel_fmax
+            )
+            image_dict.update({
+                f"gen/mel_{batch_idx}": utils.plot_spectrogram_to_numpy(y_hat_mel[0].cpu().numpy())
+            })
+            audio_dict.update({
+                f"gen/audio_{batch_idx}": y_hat[0, :, :y_hat_lengths[0]]
+            })
+            image_dict.update({f"gt/mel_{batch_idx}": utils.plot_spectrogram_to_numpy(mel[0].cpu().numpy())})
+            audio_dict.update({f"gt/audio_{batch_idx}": y[0, :, :y_lengths[0]]})
 
         # y_hat, mask, *_ = generator.module.infer(ssl, spec_lengths, speakers, y=None)
         # audio_dict.update({

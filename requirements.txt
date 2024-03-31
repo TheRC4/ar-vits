@@ -5,5 +5,12 @@ scipy
 tensorboard
 torch
 amfm_decompy
-speechtokenizer
 tqdm
+cn2an
+pypinyin
+jieba
+pyopenjtalk
+g2p_en
+vector_quantize_pytorch
+pyannote.audio
+datasets

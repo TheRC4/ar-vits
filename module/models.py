@@ -11,8 +11,9 @@ from module import attentions
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from module.commons import init_weights, get_padding
+from module.modules import LayerNorm
 from module.mrte_model import MRTE
-from module.quantize import  ResidualVectorQuantizer
+from vector_quantize_pytorch import  GroupedResidualVQ
 from text import symbols
 
 
@@ -136,6 +137,7 @@ class DurationPredictor(nn.Module):
 
 class TextEncoder(nn.Module):
     def __init__(self,
+                 in_channels,
                  out_channels,
                  hidden_channels,
                  filter_channels,
@@ -154,27 +156,15 @@ class TextEncoder(nn.Module):
         self.p_dropout = p_dropout
         self.latent_channels = latent_channels
 
-        self.ssl_proj = nn.Conv1d(768, hidden_channels, 1)
+        self.pre_proj = nn.Conv1d(in_channels, hidden_channels, 1)
 
-        self.encoder_ssl = attentions.Encoder(
+        self.encoder1 = attentions.Encoder(
             hidden_channels,
             filter_channels,
             n_heads,
             n_layers//2,
             kernel_size,
             p_dropout)
-
-        self.encoder_text = attentions.Encoder(
-            hidden_channels,
-            filter_channels,
-            n_heads,
-            n_layers,
-            kernel_size,
-            p_dropout)
-        self.text_embedding = nn.Embedding(len(symbols), hidden_channels)
-
-        self.mrte = MRTE()
-
         self.encoder2 = attentions.Encoder(
             hidden_channels,
             filter_channels,
@@ -182,49 +172,19 @@ class TextEncoder(nn.Module):
             n_layers//2,
             kernel_size,
             p_dropout)
-
-
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
-    def forward(self, y, y_lengths, text, text_lengths, ge, test=None):
+    def forward(self, y, y_lengths, ge):
         y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, y.size(2)), 1).to(y.dtype)
 
-        y = self.ssl_proj(y * y_mask) * y_mask
-        y = self.encoder_ssl(y * y_mask, y_mask)
-
-        text_mask = torch.unsqueeze(commons.sequence_mask(text_lengths, text.size(1)), 1).to(y.dtype)
-        if test == 1 :
-            text[:, :] = 0
-        text = self.text_embedding(text).transpose(1, 2)
-        text = self.encoder_text(text * text_mask, text_mask)
-
-
-        y = self.mrte(y, y_mask, text, text_mask, ge)
-
+        y = self.pre_proj(y * y_mask) * y_mask
+        y = self.encoder1(y * y_mask, y_mask)
+        y += ge
         y = self.encoder2(y * y_mask, y_mask)
 
         stats = self.proj(y) * y_mask
         m, logs = torch.split(stats, self.out_channels, dim=1)
         return y, m, logs, y_mask
-
-    def extract_latent(self, x):
-        x = self.ssl_proj(x)
-        quantized, codes, commit_loss, quantized_list = self.quantizer(x)
-        return codes.transpose(0,1)
-    def decode_latent(self, codes, y_mask, refer,refer_mask, ge):
-
-        quantized = self.quantizer.decode(codes)
-
-        y = self.vq_proj(quantized) * y_mask
-        y = self.encoder_ssl(y * y_mask, y_mask)
-
-        y = self.mrte(y, y_mask, refer, refer_mask, ge)
-
-        y = self.encoder2(y * y_mask, y_mask)
-
-        stats = self.proj(y) * y_mask
-        m, logs = torch.split(stats, self.out_channels, dim=1)
-        return y, m, logs, y_mask, quantized
 
 class ResidualCouplingBlock(nn.Module):
     def __init__(self,
@@ -574,6 +534,42 @@ class Quantizer(torch.nn.Module):
         return ret.transpose(1, 2) #N, C, T
 
 
+class NullReferenceEncoder(nn.Module):
+    def __init__(self, gin_channels=0):
+        super().__init__()
+        self.gin_channels = gin_channels
+    def forward(self, x, mask):
+        return torch.zeros(x.shape[0], self.gin_channels, 1, device=x.device, dtype=x.dtype)
+
+class AttentionEncoder(nn.Module):
+    def __init__(self,
+                 in_dim,
+                 out_dim,
+                 hidden_channels,
+                 filter_channels,
+                 n_heads,
+                 n_layers,
+                 kernel_size,
+                 p_dropout):
+        super().__init__()
+        self.in_proj = nn.Conv1d(in_dim, hidden_channels, 1)
+
+        self.encoder = attentions.Encoder(
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers,
+            kernel_size,
+            p_dropout)
+
+        self.out_proj = nn.Conv1d(hidden_channels, out_dim, 1)
+    def forward(self, x, mask):
+        x = self.in_proj(x * mask) * mask
+        x = self.encoder(x * mask, mask)
+        x = self.out_proj(x * mask) * mask
+        return x
+
+
 class CodePredictor(nn.Module):
     def __init__(self,
                  hidden_channels,
@@ -584,7 +580,7 @@ class CodePredictor(nn.Module):
                  p_dropout,
                  n_q=8,
                  dims=1024,
-                 ssl_dim=768
+                 in_dim=768
                  ):
         super().__init__()
         self.hidden_channels = hidden_channels
@@ -594,8 +590,7 @@ class CodePredictor(nn.Module):
         self.kernel_size = kernel_size
         self.p_dropout = p_dropout
 
-        self.vq_proj = nn.Conv1d(ssl_dim, hidden_channels, 1)
-        self.ref_enc = modules.MelStyleEncoder(ssl_dim, style_vector_dim=hidden_channels)
+        self.in_proj = nn.Conv1d(in_dim, hidden_channels, 1)
 
         self.encoder = attentions.Encoder(
             hidden_channels,
@@ -605,17 +600,15 @@ class CodePredictor(nn.Module):
             kernel_size,
             p_dropout)
 
-        self.out_proj = nn.Conv1d(hidden_channels, (n_q-1) * dims, 1)
+        self.out_proj = nn.Conv1d(hidden_channels, n_q * dims, 1)
         self.n_q = n_q
         self.dims = dims
-    def forward(self, x, x_mask, refer, codes, infer=False):
+    def forward(self, x, x_mask, codes, infer=False):
         x = x.detach()
-        x = self.vq_proj(x * x_mask) * x_mask
-        g = self.ref_enc(refer, x_mask)
-        x = x + g
+        x = self.in_proj(x * x_mask) * x_mask
         x = self.encoder(x * x_mask, x_mask)
         x = self.out_proj(x * x_mask) * x_mask
-        logits = x.reshape(x.shape[0], self.n_q - 1, self.dims, x.shape[-1]).transpose(2, 3)
+        logits = x.reshape(x.shape[0], self.n_q, self.dims, x.shape[-1]).transpose(2, 3)
         target = codes[1:].transpose(0, 1)
         if not infer:
             logits = logits.reshape(-1, self.dims)
@@ -635,12 +628,6 @@ class CodePredictor(nn.Module):
 
             return pred_codes.transpose(0, 1)
 
-class NullReferenceEncoder(nn.Module):
-    def __init__(self, gin_channels=0):
-        super().__init__()
-        self.gin_channels = gin_channels
-    def forward(self, x, mask):
-        return torch.zeros(x.shape[0], self.gin_channels, 1, device=x.device, dtype=x.dtype)
 
 
 class SynthesizerTrn(nn.Module):
@@ -667,9 +654,7 @@ class SynthesizerTrn(nn.Module):
                  n_speakers=0,
                  gin_channels=0,
                  use_sdp=True,
-                 semantic_frame_rate=None,
                  freeze_quantizer=None,
-                 use_reference_enc=True,
                  **kwargs):
 
         super().__init__()
@@ -692,7 +677,9 @@ class SynthesizerTrn(nn.Module):
         self.gin_channels = gin_channels
 
         self.use_sdp = use_sdp
-        self.enc_p = TextEncoder(
+        ssl_dim = 768
+        vq_dim = 256
+        self.enc_p = TextEncoder(vq_dim,
                                  inter_channels,
                                  hidden_channels,
                                  filter_channels,
@@ -706,41 +693,38 @@ class SynthesizerTrn(nn.Module):
                                       gin_channels=gin_channels)
         self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels)
 
-        if use_reference_enc:
-            self.ref_enc = modules.MelStyleEncoder(spec_channels, style_vector_dim=gin_channels)
-        else:
-            self.ref_enc = NullReferenceEncoder(gin_channels=gin_channels)
+        self.ref_enc = modules.MelStyleEncoder(spec_channels, style_vector_dim=gin_channels)
 
-        ssl_dim = 768
-        assert semantic_frame_rate in ['25hz', "50hz"]
-        self.semantic_frame_rate = semantic_frame_rate
-        if semantic_frame_rate == '25hz':
-            self.ssl_proj = nn.Conv1d(ssl_dim, ssl_dim, 2, stride=2)
-        else:
-            self.ssl_proj = nn.Conv1d(ssl_dim, ssl_dim, 1, stride=1)
+        self.quantizer = GroupedResidualVQ(
+                dim=vq_dim,
+                codebook_size=160,
+                threshold_ema_dead_code=0,
+                kmeans_init=True,
+                groups=4,
+                num_quantizers=1
+            )
+        self.ssl_proj = nn.Conv1d(ssl_dim, vq_dim, 3, stride=1, padding=1)
+        self.freeze_quantizer = freeze_quantizer
+        if self.freeze_quantizer:
+            for param in self.ssl_proj.parameters():
+                param.requires_grad = False
+            for param in self.quantizer.parameters():
+                param.requires_grad = False
+            print("--------------freeze quantizer-------------")
+            print("--------------freeze quantizer-------------")
 
-        self.quantizer = ResidualVectorQuantizer(
-            dimension=ssl_dim,
-            n_q=1,
-            bins=1024
-        )
-        if freeze_quantizer:
-            self.ssl_proj.requires_grad_(False)
-            self.quantizer.requires_grad_(False)
-
-    def forward(self, ssl, y, y_lengths, text, text_lengths):
+    def forward(self, ssl, y, y_lengths):
+        if self.freeze_quantizer:
+            self.quantizer.eval()
         y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, y.size(2)), 1).to(y.dtype)
         ge = self.ref_enc(y * y_mask, y_mask)
 
-        from torch.cuda.amp import autocast
-        with autocast(enabled=False):
-            ssl = self.ssl_proj(ssl)
-            quantized, codes, commit_loss, quantized_list = self.quantizer(ssl, layers=[0])
+        x = self.ssl_proj(ssl)
+        quantized,codes,  commit_loss,  = self.quantizer(x.transpose(1,2))
+        quantized = quantized.transpose(1,2)
+        commit_loss = commit_loss.mean()
 
-        if self.semantic_frame_rate == '25hz':
-            quantized = F.interpolate(quantized, size=int(quantized.shape[-1] * 2), mode="nearest")
-
-        x, m_p, logs_p, y_mask = self.enc_p(quantized, y_lengths, text, text_lengths, ge)
+        x, m_p, logs_p, y_mask = self.enc_p(quantized, y_lengths, ge)
         z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=ge)
         z_p = self.flow(z, y_mask, g=ge)
 
@@ -748,46 +732,47 @@ class SynthesizerTrn(nn.Module):
         o = self.dec(z_slice, g=ge)
         return o, commit_loss, ids_slice, y_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q), quantized
 
-    def infer(self, ssl, y, y_lengths, text, text_lengths, test=None, noise_scale=0.5):
+    def infer(self, ssl, y, y_lengths, noise_scale=0.5):
+        self.quantizer.eval()
         y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, y.size(2)), 1).to(y.dtype)
         ge = self.ref_enc(y * y_mask, y_mask)
 
-        ssl =  self.ssl_proj(ssl)
-        quantized, codes, commit_loss, _ = self.quantizer(ssl, layers=[0])
-        if self.semantic_frame_rate == '25hz':
-            quantized = F.interpolate(quantized, size=int(quantized.shape[-1] * 2), mode="nearest")
+        x = self.ssl_proj(ssl)
+        quantized, codes, commit_loss, = self.quantizer(x.transpose(1, 2))
+        quantized = quantized.transpose(1, 2)
 
-        x, m_p, logs_p, y_mask = self.enc_p(quantized, y_lengths, text, text_lengths, ge, test=test)
+        x, m_p, logs_p, y_mask = self.enc_p(quantized, y_lengths, ge)
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
-
         z = self.flow(z_p, y_mask, g=ge, reverse=True)
 
         o = self.dec((z * y_mask)[:, :, :], g=ge)
         return o,y_mask, (z, z_p, m_p, logs_p)
-
-
+    #
+    @torch.inference_mode()
     @torch.no_grad()
-    def decode(self, codes,text, refer, noise_scale=0.5):
+    def decode(self, codes, refer, noise_scale=0.5):
+        self.quantizer.eval()
         refer_lengths = torch.LongTensor([refer.size(2)]).to(refer.device)
         refer_mask = torch.unsqueeze(commons.sequence_mask(refer_lengths, refer.size(2)), 1).to(refer.dtype)
         ge = self.ref_enc(refer * refer_mask, refer_mask)
 
-        y_lengths = torch.LongTensor([codes.size(2)*2]).to(codes.device)
-        text_lengths = torch.LongTensor([text.size(-1)]).to(text.device)
+        y_lengths = torch.LongTensor([codes.size(2)]).to(codes.device)
 
-        quantized = self.quantizer.decode(codes)
-        if self.semantic_frame_rate == '25hz':
-            quantized = F.interpolate(quantized, size=int(quantized.shape[-1] * 2), mode="nearest")
+        quantized = self.quantizer.get_output_from_indices(codes.squeeze(0).unsqueeze(-1))
+        quantized = quantized.transpose(1, 2)
 
-        x, m_p, logs_p, y_mask = self.enc_p(quantized, y_lengths, text, text_lengths, ge)
+        x, m_p, logs_p, y_mask = self.enc_p(quantized, y_lengths, ge)
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
-
         z = self.flow(z_p, y_mask, g=ge, reverse=True)
 
         o = self.dec((z * y_mask)[:, :, :], g=ge)
         return o
-
-    def extract_latent(self, x):
-        ssl =  self.ssl_proj(x)
-        quantized, codes, commit_loss, quantized_list = self.quantizer(ssl)
-        return codes.transpose(0,1)
+    # #
+    @torch.inference_mode()
+    @torch.no_grad()
+    def extract_latent(self, ssl):
+        self.quantizer.eval()
+        assert ssl.shape[0] == 1
+        ssl = self.ssl_proj(ssl)
+        quantized, codes, commit_loss, = self.quantizer(ssl.transpose(1, 2))
+        return codes.squeeze(1).squeeze(-1).unsqueeze(0)

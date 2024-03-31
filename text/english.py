@@ -95,7 +95,9 @@ def g2p(text):
                 else:
                     phones.append(ph)
 
-    return replace_phs(phones)
+    phones = replace_phs(phones)
+    word2ph = [1 for i in phones]
+    return phones, word2ph
 
 if __name__ == "__main__":
     # print(get_dict())

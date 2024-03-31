@@ -3,88 +3,89 @@ import sys
 import librosa
 import soundfile
 import torch
+import torchaudio
 
 import utils
 from module.models import SynthesizerTrn
-from module.mel_processing import spectrogram_torch
-# from feature_extractor import cnhubert as content_module
+from module.mel_processing import spectrogram_torch, spec_to_mel_torch
+from feature_extractor.cnhubert import get_model, get_content
+from text import cleaned_text_to_sequence
+from text.cleaner import clean_text
 
-vits_model_cache = None
+models = None
 
 
-def _load_model(device="cuda"):
-    global vits_model_cache
-    if vits_model_cache is not None:
-        return vits_model_cache
-    hps = utils.get_hparams_from_file("configs/s2-ft.json")
-    model_dir = hps.s2_ckpt_dir
+def load_model(device="cuda", config_path="configs/s2.json", model_path=None, skip_ssl=False):
+    global models
+    device = torch.device(device)
+    if models is not None:
+        return models
+    print('loading models...')
+    hps = utils.get_hparams_from_file(config_path)
     net_g = SynthesizerTrn(
         hps.data.filter_length // 2 + 1,
         hps.train.segment_size // hps.data.hop_length,
         n_speakers=hps.data.n_speakers,
         **hps.model).to(device)
-
-    utils.load_checkpoint(utils.latest_checkpoint_path(model_dir, "G_*.pth"), net_g,
-                          None, True)
+    if model_path is None:
+        model_path = utils.latest_checkpoint_path(hps.s2_ckpt_dir, "G_*.pth")
+    utils.load_checkpoint(model_path, net_g,
+                          None, False)
     net_g.eval()
-    vits_model_cache = (hps, net_g)
-    return hps, net_g
+    ssl = get_model().to(device)
+    models = (hps, net_g, ssl)
+    return models
 
 
 def get_spepc(hps, filename):
     audio, sampling_rate = utils.load_wav_to_torch(filename)
+    audio = audio.unsqueeze(0)
     if sampling_rate != hps.data.sampling_rate:
-        raise ValueError("{} SR doesn't match target {} SR".format(
-            sampling_rate, hps.data.sampling_rate))
+        audio = torchaudio.functional.resample(audio, sampling_rate, hps.data.sampling_rate)
     audio_norm = audio
-    audio_norm = audio_norm.unsqueeze(0)
     spec = spectrogram_torch(audio_norm, hps.data.filter_length,
                              hps.data.sampling_rate, hps.data.hop_length, hps.data.win_length,
                              center=False)
     return spec
 
 
-def decode_to_file(codes,phonemes, save_path, refer_path, transform='valle'):
+
+@torch.no_grad()
+@torch.inference_mode()
+def decode_to_file(codes, ref_path, save_path):
     device = codes.device
-    hps, net_g = _load_model(device=device)
-    if transform=='valle':
-        codes = codes.transpose(0, 1).unsqueeze(1)
-    else:
-        codes = codes.transpose(0, 1)
-    refer = get_spepc(hps, refer_path).to(device)
-    audio = net_g.decode(codes,phonemes, refer).detach().cpu().numpy()[0, 0]
+    hps, net_g, ssl = load_model(device=device)
+    ref = get_spepc(hps, ref_path).to(device)
+
+    audio = net_g.decode(codes.transpose(0, 1), ref).detach().cpu().numpy()[0, 0]
     soundfile.write(save_path, audio, hps.data.sampling_rate)
 
 
-def encode_from_file(path, device='cpu'):
-    hps, net_g = _load_model(device=device)
-    content_model = content_module.get_model().to(device)
-    wav16k, sr = librosa.load(path, sr=16000)
-    with torch.no_grad():
-        wav16k = torch.from_numpy(wav16k).to(device)
-        ssl_content = content_module.get_content(content_model, wav_16k_tensor=wav16k)
-        codes = net_g.extract_latent(ssl_content)
-    return codes.cpu()
+@torch.no_grad()
+@torch.inference_mode()
+def encode_from_file(path, device='cpu', config_path="configs/s2.json", model_path=None):
+    hps, net_g, ssl = load_model(device=device, config_path=config_path, model_path=model_path)
+    ssl_content = get_content(ssl, path).to(device)
+    codes = net_g.extract_latent(ssl_content)
+    return codes
 
-def encode_semantic_from_wav16k_numpy(wav16k, device='cpu'):
-    hps, net_g = _load_model(device=device)
-    content_model = content_module.get_model().to(device)
-    with torch.no_grad():
-        wav16k = torch.from_numpy(wav16k).to(device)
-        ssl_content = content_module.get_content(content_model, wav_16k_tensor=wav16k)
-        codes = net_g.extract_latent(ssl_content)
-    return codes[0, :1, :]
+
+@torch.no_grad()
+@torch.inference_mode()
+def encode_ge_from_file(path, device='cpu', config_path="configs/s2.json", model_path=None):
+    hps, net_g, ssl = load_model(device=device, config_path=config_path, model_path=model_path)
+    ref = get_spepc(hps, path).to(device)
+    ge = net_g.extract_ge(ref)
+    return ge
+
 
 if __name__ == '__main__':
-    codes_path = "pred_semantic.pt"
-    refer_path = "/home/fish/genshin_data/zh/派蒙/vo_DQAQ003_1_paimon_06.wav"
-    # src_path = "dataset/PaiMeng/vo_DQAQ003_1_paimon_06.wav"
+    refer_path = "/home/fish/genshin_data/zh/钟离/vo_ZLLQ104_CS_zhongli_04.wav"
+    src_path = "/home/fish/genshin_data/zh/派蒙/vo_ABDLQ001_1_paimon_01.wav"
+    refer_path = src_path
+    # src_path=  refer_path
     device = 'cpu'
-    # codes = encode_from_file(src_path, device=device)
-    codes = torch.load(codes_path).unsqueeze(0).unsqueeze(0)
-    print('argv', sys.argv[1])
-    phonemes = torch.LongTensor([int(i) for i in sys.argv[1].split(" ")]).unsqueeze(0)
+    codes = encode_from_file(src_path, device=device)
     print(codes.shape)
-    print("phonemes", phonemes)
-
-    decode_to_file(codes, phonemes,"tmp.wav", refer_path, transform="raw")
+    decode_to_file(codes, refer_path, "tmp.wav")
+    # infer_test(src_path)

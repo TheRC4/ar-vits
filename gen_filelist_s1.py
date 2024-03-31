@@ -1,35 +1,46 @@
-import numpy
-import pandas
+import os.path
+import json
 
-semantic_path = 'dump/semantic.tsv'
+import numpy as np
+import pandas as pd
+import torch
+from datasets import Dataset
+from matplotlib import pyplot as plt
+
+
 phoneme_path = 'dump/phoneme.npy'
-train_semantic_path = 'dump/semantic_train.tsv'
-train_phoneme_path = 'dump/phoneme_train.npy'
-dev_semantic_path = 'dump/semantic_dev.tsv'
-dev_phoneme_path = 'dump/phoneme_dev.npy'
+phoneme_data = np.load(phoneme_path, allow_pickle=True).item()
+print(len(phoneme_data))
+hz=50
+def generate_data():
+    for k, v in phoneme_data.items():
+        itemname = k
 
-# 读取dump/semantic.tsv
-semantic_df = pandas.read_csv(semantic_path, sep='\t')
-# pd.DataFrame(columns=["item_name", "semantic_audio"])
-# # 读取dump/phoneme.npy
-phoneme_dict = numpy.load(phoneme_path, allow_pickle=True).item()
+        code_path = itemname.replace(".wav", ".code.pt")
+        if not os.path.exists(code_path):
+            continue
+        code = torch.load(code_path).squeeze(0)
 
-dev_num = 20
-# 随机从semantic_df中选取dev_num个
-dev_df = semantic_df.sample(n=dev_num)
-# 剩下的是train
-train_df = semantic_df.drop(dev_df.index)
-# 保存
-dev_df.to_csv(dev_semantic_path, sep='\t', index=False)
-train_df.to_csv(train_semantic_path, sep='\t', index=False)
+        dur = code.shape[-1] / hz
+        spk_emb_path = itemname.replace(".wav", ".spk.npy")
+        if not os.path.exists(spk_emb_path):
+            print( f'spk_emb_path {spk_emb_path} not exists for {itemname}\n\n\n\n\n\n\n\n\n')
+            continue
+        spk_emb = np.load(spk_emb_path)
 
-# 将dev_df中的item_name取出来 作为dev_phoneme_dict的key
-dev_item_names = dev_df['item_name'].tolist()
-dev_phoneme_dict = {k: phoneme_dict[k] for k in dev_item_names if k in phoneme_dict}
-train_phoneme_dict = {k: phoneme_dict[k] for k in phoneme_dict.keys() if k not in dev_item_names}
+        if spk_emb.shape != (256, ):
+            print( f'spk_emb shape {spk_emb.shape} not correct for {itemname}\n\n\n\n\n\n\n\n\n')
+        if dur > 100:
+            print(f'dur {dur} too long for {itemname}\n\n\n\n\n\n\n\n')
+        yield {"item_name": itemname, "codes": code, 'phoneme': v, 'length': dur, 'spk_emb': spk_emb}
 
-numpy.save(dev_phoneme_path, dev_phoneme_dict)
-numpy.save(train_phoneme_path, train_phoneme_dict)
+dataset = Dataset.from_generator(generate_data)
+print(dataset)
 
+test_samples = 10
 
+split_dataset = dataset.train_test_split(test_size=test_samples/len(dataset), shuffle=True)
+
+split_dataset.save_to_disk('dump/phone_semantic_dataset')
+print("average duration", np.mean(dataset['length']))
 

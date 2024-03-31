@@ -5,7 +5,7 @@ from data_conf import data_root
 filenames = glob(f"{data_root}/**/*.wav", recursive=True)  # [:10]
 
 shuffle(filenames)
-val_num = 8
+val_num = 12
 train = filenames[:-val_num]
 val = filenames[-val_num:]
 train.sort()

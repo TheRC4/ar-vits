@@ -1,7 +1,7 @@
 import os
 
 punctuation = ['!', '?', '…', ",", ".", '-']
-pu_symbols = punctuation + ["SP", 'SP2', 'SP3', "UNK"]
+pu_symbols = punctuation + ["SP", 'SP2', 'SP3', "UNK", 'EOS']
 pad = '_'
 
 c = ['AA', 'EE', 'OO', 'b', 'c', 'ch', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'm', 'n', 'p', 'q', 'r', 's', 'sh', 't', 'w', 'x', 'y', 'z', 'zh']
@@ -15,7 +15,8 @@ ja_symbols = ['I', 'N', 'U', 'a', 'b', 'by', 'ch', 'cl', 'd', 'dy', 'e', 'f', 'g
 
 arpa = {'AH0', 'S', 'AH1', 'EY2', 'AE2', 'EH0', 'OW2', 'UH0', 'NG', 'B', 'G', 'AY0', 'M', 'AA0', 'F', 'AO0', 'ER2', 'UH1', 'IY1', 'AH2', 'DH', 'IY0', 'EY1', 'IH0', 'K', 'N', 'W', 'IY2', 'T', 'AA1', 'ER1', 'EH2', 'OY0', 'UH2', 'UW1', 'Z', 'AW2', 'AW1', 'V', 'UW2', 'AA2', 'ER', 'AW0', 'UW0', 'R', 'OW1', 'EH1', 'ZH', 'AE0', 'IH2', 'IH', 'Y', 'JH', 'P', 'AY1', 'EY0', 'OY2', 'TH', 'HH', 'D', 'ER0', 'CH', 'AO1', 'AE1', 'AO2', 'OY1', 'AY2', 'IH1', 'OW0', 'L', 'SH'}
 
-symbols = [pad] + c + v + ja_symbols + pu_symbols + list(arpa)
-symbols = sorted(set(symbols))
+symbols = c + v + ja_symbols + pu_symbols + list(arpa)
+symbols = [pad] + sorted(set(symbols))
 if __name__ == '__main__':
     print(len(symbols))
+    print(symbols)

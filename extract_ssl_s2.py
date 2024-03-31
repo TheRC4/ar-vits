@@ -10,38 +10,37 @@ from tqdm import tqdm
 
 import utils
 from data_conf import data_root
-from feature_extractor import content_module_map
+from feature_extractor.cnhubert import get_model, get_content
 import logging
 
 logging.getLogger("numba").setLevel(logging.WARNING)
 import librosa
 
 
-def process_one(file_path, model, device, content_module):
+def process_one(file_path, model):
+
+    # file_path16k = file_path.replace('genshin_data', 'genshin_data16k')
 
     ssl_path = file_path.replace(".wav", ".ssl.pt")
-    try:
-        wav16k, sr = librosa.load(file_path, sr=16000)
-        wav16k = torch.from_numpy(wav16k).to(device)
-        ssl_content = content_module.get_content(model, wav_16k_tensor=wav16k)
-        torch.save(ssl_content.cpu().half(), ssl_path)
-        del ssl_content
-        del wav16k
-    except:
-        print("skip", file_path)
+    ssl_content = get_content(model, file_path)
+    assert not torch.isnan(ssl_content).any(), f"NaN in {file_path}"
+    torch.save(ssl_content.half().cpu(), ssl_path)
 
-def process_batch(filenames, content_module):
-    content_module = content_module_map[content_module]
+def process_batch(filenames):
     print("Loading content model...")
     rank = mp.current_process()._identity
     rank = rank[0] if len(rank) > 0 else 0
     gpu_id = rank % torch.cuda.device_count()
     device = torch.device(f"cuda:{gpu_id}")
-    print(device)
-    ssl_model = content_module.get_model().to(device)
+    ssl_model = get_model()
+    ssl_model = ssl_model.to(device)
+    ssl_model.eval()
     print("Loaded content model.")
     for filename in tqdm(filenames):
-        process_one(filename, ssl_model, device, content_module)
+        try:
+            process_one(filename, ssl_model)
+        except Exception as e:
+            print(f"Error processing {filename}: {e}")
 
 
 if __name__ == "__main__":
@@ -56,14 +55,14 @@ if __name__ == "__main__":
     shuffle(filenames)
     multiprocessing.set_start_method("spawn", force=True)
 
-    num_processes = 8
+    num_processes = 2
     chunk_size = int(math.ceil(len(filenames) / num_processes))
     chunks = [
         filenames[i : i + chunk_size] for i in range(0, len(filenames), chunk_size)
     ]
     print([len(c) for c in chunks])
     processes = [
-        multiprocessing.Process(target=process_batch, args=(chunk,hps.content_module)) for chunk in chunks
+        multiprocessing.Process(target=process_batch, args=(chunk, )) for chunk in chunks
     ]
     for p in processes:
         p.start()

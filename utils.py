@@ -27,6 +27,14 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, skip_optimizer=False
     if optimizer is not None and not skip_optimizer and checkpoint_dict['optimizer'] is not None:
         optimizer.load_state_dict(checkpoint_dict['optimizer'])
     saved_state_dict = checkpoint_dict['model']
+    copy_state_dict(model, saved_state_dict)
+    print("load ")
+    logger.info("Loaded checkpoint '{}' (iteration {})".format(
+        checkpoint_path, iteration))
+    return model, optimizer, learning_rate, iteration
+
+
+def copy_state_dict(model, saved_state_dict):
     if hasattr(model, 'module'):
         state_dict = model.module.state_dict()
     else:
@@ -45,10 +53,6 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, skip_optimizer=False
         model.module.load_state_dict(new_state_dict)
     else:
         model.load_state_dict(new_state_dict)
-    print("load ")
-    logger.info("Loaded checkpoint '{}' (iteration {})".format(
-        checkpoint_path, iteration))
-    return model, optimizer, learning_rate, iteration
 
 
 def save_checkpoint(model, optimizer, learning_rate, iteration, checkpoint_path):
@@ -292,3 +296,39 @@ class HParams():
 
 if __name__ == '__main__':
     print(load_wav_to_torch('/home/fish/wenetspeech/dataset_vq/Y0000022499_wHFSeHEx9CM/S00261.flac'))
+
+
+from matplotlib import pyplot as plt
+
+mpl_logger = logging.getLogger('matplotlib')
+mpl_logger.setLevel(logging.WARNING)
+def plot_alignment(data, titles=None, save_dir=None):
+    fig, axes = plt.subplots(len(data), 1, figsize=[6,4],dpi=300)
+    plt.subplots_adjust(top = 0.9, bottom = 0.1, right = 0.95, left = 0.05)
+    if titles is None:
+        titles = [None for i in range(len(data))]
+
+    for i in range(len(data)):
+        im = data[i]
+        axes[i].imshow(im, origin='lower')
+        # axes[i].set_xlabel('Audio')
+        # axes[i].set_ylabel('Text')
+        axes[i].set_ylim(0, im.shape[0])
+        axes[i].set_xlim(0, im.shape[1])
+        axes[i].set_title(titles[i], fontsize='medium')
+        axes[i].tick_params(labelsize='x-small')
+        axes[i].set_anchor('W')
+    plt.tight_layout()
+
+    fig.canvas.draw()
+    data = save_figure_to_numpy(fig)
+    if save_dir is not None:
+        plt.savefig(save_dir)
+    plt.close()
+    return data
+
+def save_figure_to_numpy(fig):
+    # save it to a numpy array.
+    data = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep='')
+    data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    return data
