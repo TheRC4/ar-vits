@@ -8,7 +8,7 @@
 + 效果一般，实验性分支，而且pretrain规模较小（zh-300h ja-80h en-20h），语言较少，效果不及[GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 
 + 没有做推理工程化加速，推理速度极极极极极慢，仅供实验使用
 + 由于底模数据原因模型基本只有中文能力，而同样由于训练集时长均较短，模型只能合成较短的句子，长句需要切片分开推理，否则会爆炸。
-+ 已测试过的微调配置：30分钟数据+s2微调1200步+s1微调100步 效果 -> [sample](https://huggingface.co/innnky/ar-vits/blob/main/samples/%E4%B8%83%E6%B5%B7%E5%87%BA%E5%B8%88%E8%A1%A8.wav)
++ 已测试过的微调配置：30分钟数据+s2微调1200步+s1微调100步 效果 -> [sample](https://huggingface.co/innnky/ar-vits/blob/main/samples/%E4%B8%83%E6%B5%B7%E5%87%BA%E5%B8%88%E8%A1%A8.wav) 微调数据来自[Xz乔希](https://www.bilibili.com/video/BV1KA4m1V71D)
 + 需要指定参考音频，但此分支使用的是声纹embedding，而非prompt的方式，因此参考音频参考效果不是很强
 + 所有脚本只在linux下测试通过，未在win下测试
 + 如果无法连接huggingface下载bert、hubert等模型，建议使用`export HF_ENDPOINT=https://hf-mirror.com`
