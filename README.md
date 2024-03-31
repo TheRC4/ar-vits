@@ -10,6 +10,12 @@
 + 由于底模数据原因模型基本只有中文能力，而同样由于训练集时长均较短，模型只能合成较短的句子，长句需要切片分开推理，否则会爆炸。
 + 已测试过的微调配置：30分钟数据+s2微调1200步+s1微调100步 效果 -> [sample](https://huggingface.co/innnky/ar-vits/blob/main/samples/%E4%B8%83%E6%B5%B7%E5%87%BA%E5%B8%88%E8%A1%A8.wav)
 + 需要指定参考音频，但此分支使用的是声纹embedding，而非prompt的方式，因此参考音频参考效果不是很强
++ 所有脚本只在linux下测试通过，未在win下测试
++ 如果无法连接huggingface下载bert、hubert等模型，建议使用`export HF_ENDPOINT=https://hf-mirror.com`
+
+
+## Acknowledgement
++ Thanks to the support of the GPUs by [leng-yue](https://github.com/leng-yue)
 
 ## Reference
 + autoregressive mqtts transformer from [MQTTS](https://github.com/b04901014/MQTTS)
@@ -38,9 +44,6 @@ dataset_raw
 │   │   ├── utt1.lab
 │   │   ├── ...
 ```
-## Note
-+ The script is only tested on linux, not tested on windows
-+ If you can't connect to huggingface to download bert, hubert, etc., it is recommended to use `export HF_ENDPOINT=https://hf-mirror.com`
 ## vits S2 training
 + resample.py
 + gen_phonemes.py
@@ -61,4 +64,3 @@ python s1_train.py
 ```
 ## Inference
 + s1_infer.py/s2_infer.py
-
