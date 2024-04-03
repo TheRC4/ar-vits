@@ -4,7 +4,7 @@
 
 (WIP) text to speech using autoregressive transformer and VITS 
 ## Note
-+ 此分支为AR-VITS的多码本+MQTTS分支，用于实验多码本解码，[GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 的单码本版本在[master分支](https://github.com/innnky/ar-vits/tree/mqvits) 
++ 此分支为AR-VITS的多码本+MQTTS分支，用于实验多码本解码，[GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 的单码本版本在[master分支](https://github.com/innnky/ar-vits/tree/master) 
 + 效果一般，实验性分支，而且pretrain规模较小（zh-300h ja-80h en-20h），语言较少，效果不及[GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 
 + 没有做推理工程化加速，推理速度极极极极极慢，仅供实验使用
 + 由于底模数据原因模型基本只有中文能力，而同样由于训练集时长均较短，模型只能合成较短的句子，长句需要切片分开推理，否则会爆炸。
